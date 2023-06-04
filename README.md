@@ -4,7 +4,7 @@
 
 ## Description
 
-Hackjagoo is a tool that allows you to gain deep insights into running executables and their loaded modules. With this program, you can easily analyze and explore the modules and exported functions of any executable, making it an invaluable resource for developers, security researchers, and software enthusiasts.
+Hackjagoo is a "Windows Specific" tool that allows you to gain deep insights into running executables and their loaded modules. With this program, you can easily analyze and explore the modules and exported functions of any executable, making it an invaluable resource for developers, security researchers, and software enthusiasts.
 
 ## Features
 
