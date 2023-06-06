@@ -5,6 +5,12 @@
 #include "afxdialogex.h"
 #include <windows.h>
 #include <psapi.h>
+#include <DbgHelp.h>
+#include <vector>
+#include <algorithm>
+
+#pragma comment(lib, "Dbghelp.lib")
+#pragma comment(lib, "Version.lib")
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -93,8 +99,10 @@ void CHackjaggoDlg::InitializeLoadedModulesListControls()
 	dwStyle |= LVS_EX_GRIDLINES;
 	m_oLoadedModulesListControl.SetExtendedStyle(dwStyle);
 
-	m_oLoadedModulesListControl.InsertColumn(LoadedModulesListControlColumnName, _T("Name"), LVCFMT_LEFT, 350);
-	m_oLoadedModulesListControl.InsertColumn(LoadedModulesListControlColumnFullPath, _T("Path"), LVCFMT_LEFT, 350);	
+	m_oLoadedModulesListControl.InsertColumn(LoadedModulesListControlColumnName, _T("Name"), LVCFMT_LEFT, 270);
+	m_oLoadedModulesListControl.InsertColumn(LoadedModulesListControlColumnFullPath, _T("Path"), LVCFMT_LEFT, 280);	
+	m_oLoadedModulesListControl.InsertColumn(LoadedModulesListControlColumnBaseDllAddress, _T("Base dll adddess"), LVCFMT_LEFT, 130);
+	m_oLoadedModulesListControl.InsertColumn(LoadedModulesListControlColumnVersion, _T("Version"), LVCFMT_LEFT, 150);	
 }
 
 void CHackjaggoDlg::InitializeModulesFunctionsListControl()
@@ -105,16 +113,18 @@ void CHackjaggoDlg::InitializeModulesFunctionsListControl()
 	dwStyle |= LVS_EX_GRIDLINES;
 	m_oModuleFunctionsListControl.SetExtendedStyle(dwStyle);
 
-	m_oModuleFunctionsListControl.InsertColumn(ModuleFunctionsListControlColumnName, _T("Name"), LVCFMT_LEFT, 350);
+	m_oModuleFunctionsListControl.InsertColumn(ModuleFunctionsListControlColumnName, _T("Function name"), LVCFMT_LEFT, 350);
+	m_oModuleFunctionsListControl.InsertColumn(ModuleFuntionsListControlUndecoratedName, _T("Undecorated function name"), LVCFMT_LEFT, 500);
+	m_oModuleFunctionsListControl.InsertColumn(ModuleFuntionsListControlOrdinal, _T("Ordinal"), LVCFMT_LEFT, 90);
+	m_oModuleFunctionsListControl.InsertColumn(ModuleFuntionsListControlAddressRVA, _T("RVA Address + Mod. base"), LVCFMT_LEFT, 500);
 }
 
 void CHackjaggoDlg::EnumerateExportedFunctions(HMODULE hModule)
 {
 	m_oModuleFunctionsListControl.DeleteAllItems();
+
 	// Get the base address of the module
 	DWORD_PTR moduleBase = (DWORD_PTR)hModule;
-
-	// Enumerate exported functions
 	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)moduleBase;
 	PIMAGE_NT_HEADERS pNTHeaders = (PIMAGE_NT_HEADERS)(moduleBase + pDosHeader->e_lfanew);
 	PIMAGE_EXPORT_DIRECTORY pExportDir = (PIMAGE_EXPORT_DIRECTORY)(moduleBase + pNTHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
@@ -123,13 +133,41 @@ void CHackjaggoDlg::EnumerateExportedFunctions(HMODULE hModule)
 	DWORD* pNames = (DWORD*)(moduleBase + pExportDir->AddressOfNames);
 	WORD* pOrdinals = (WORD*)(moduleBase + pExportDir->AddressOfNameOrdinals);
 
+	std::vector<FunctionInfo> functions;
+
 	for (DWORD i = 0; i < pExportDir->NumberOfNames; ++i)
 	{
 		DWORD functionRVA = pFunctions[pOrdinals[i]];
 		DWORD functionNameRVA = pNames[i];
+		WORD functionOrdinal = pOrdinals[i];
 		const char* functionName = (const char*)(moduleBase + functionNameRVA);
+		if (!functionName)
+			continue;
 
-		m_oModuleFunctionsListControl.InsertItem(0, CString(functionName));
+		functions.push_back({ functionRVA, functionNameRVA, functionOrdinal, functionName });
+	}
+
+	std::sort(functions.begin(), functions.end(), [](const FunctionInfo& info1, const FunctionInfo& info2) {
+		return info1.functionOrdinal > info2.functionOrdinal;
+		});
+
+	for (const auto& function : functions)
+	{
+		const long lItemIndex = m_oModuleFunctionsListControl.InsertItem(0, CString(function.functionName));
+		char demangledName[1024];
+		if (UnDecorateSymbolName(function.functionName, demangledName, sizeof(demangledName), UNDNAME_COMPLETE) != 0)
+		{
+			if (strcmp(demangledName, function.functionName) != 0)
+				m_oModuleFunctionsListControl.SetItemText(lItemIndex, ModuleFuntionsListControlUndecoratedName, CString(demangledName));
+		}
+
+		CString strOrdinal;
+		strOrdinal.Format(_T("%u"), function.functionOrdinal);
+		m_oModuleFunctionsListControl.SetItemText(lItemIndex, ModuleFuntionsListControlOrdinal, strOrdinal);
+
+		CString strAdderssRVA;
+		strAdderssRVA.Format(_T("%p"), function.functionRVA);
+		m_oModuleFunctionsListControl.SetItemText(lItemIndex, ModuleFuntionsListControlAddressRVA, strAdderssRVA);
 	}
 }
 
@@ -243,6 +281,48 @@ void CHackjaggoDlg::OnContextMenu(CWnd* pWnd, CPoint point)
 	}
 }
 
+CString CHackjaggoDlg::GetDllVersion(const CStringW& dllPath)
+{
+	DWORD dwHandle = 0;
+	DWORD dwSize = GetFileVersionInfoSizeW(dllPath, &dwHandle);
+	if (dwSize == 0)
+	{
+		return _T("");
+	}
+
+	std::vector<BYTE> versionInfo(dwSize);
+	if (!GetFileVersionInfoW(dllPath, dwHandle, dwSize, versionInfo.data()))
+	{
+		return _T("");
+	}
+
+	VS_FIXEDFILEINFO* pFileInfo;
+	UINT fileInfoSize;
+	if (!VerQueryValueW(versionInfo.data(), L"\\", reinterpret_cast<LPVOID*>(&pFileInfo), &fileInfoSize))
+	{
+		return _T("");
+	}
+
+	DWORD fileVersionMS = pFileInfo->dwFileVersionMS;
+	DWORD fileVersionLS = pFileInfo->dwFileVersionLS;
+
+	// Extracting individual version components
+	WORD major = HIWORD(fileVersionMS);
+	WORD minor = LOWORD(fileVersionMS);
+	WORD build = HIWORD(fileVersionLS);
+	WORD revision = LOWORD(fileVersionLS);
+
+	// Constructing the version string
+	CString strVersion;
+	strVersion.Format(_T("%u.%u.%u.%u."),
+		major,
+		minor, 
+		build, 
+		revision);
+
+	return strVersion;
+}
+
 void CHackjaggoDlg::OnContexMenuLoadedModules()
 {
 	m_oModuleFunctionsListControl.DeleteAllItems();
@@ -289,7 +369,17 @@ void CHackjaggoDlg::OnContexMenuLoadedModules()
 				TCHAR modulePath[MAX_PATH];
 				if (GetModuleFileNameEx(processHandle, moduleHandles[i], modulePath, sizeof(modulePath) / sizeof(TCHAR)) > 0)
 				{
+					HMODULE moduleHandle = GetModuleHandle(modulePath);
+					if (moduleHandle)
+					{
+						CString strModuleBaseAddress;
+						strModuleBaseAddress.Format(_T("%0x%08X"), reinterpret_cast<DWORD_PTR>(moduleHandle));
+						m_oLoadedModulesListControl.SetItemText(lItemIndex, LoadedModulesListControlColumnBaseDllAddress, strModuleBaseAddress);
+					}
+
+					const CString strVersion = GetDllVersion(modulePath);
 					m_oLoadedModulesListControl.SetItemText(lItemIndex, LoadedModulesListControlColumnFullPath, modulePath);
+					m_oLoadedModulesListControl.SetItemText(lItemIndex, LoadedModulesListControlColumnVersion, strVersion);	
 				}
 			}
 		}

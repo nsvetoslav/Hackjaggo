@@ -15,6 +15,13 @@ class CHackjaggoDlg : public CDialogEx
 		}
 	};
 
+	struct FunctionInfo {
+		DWORD functionRVA;
+		DWORD functionNameRVA;
+		WORD functionOrdinal;
+		const char* functionName;
+	};
+
 	enum ProcessesListControlColumns : int
 	{
 		ProcessesListControlColumnPID,
@@ -23,11 +30,16 @@ class CHackjaggoDlg : public CDialogEx
 
 	enum LoadedModulesListControlColumns : int {
 		LoadedModulesListControlColumnName,
-		LoadedModulesListControlColumnFullPath
+		LoadedModulesListControlColumnFullPath,
+		LoadedModulesListControlColumnBaseDllAddress,
+		LoadedModulesListControlColumnVersion,
 	};
 
 	enum ModuleFunctionsListControlColumns : int {
 		ModuleFunctionsListControlColumnName,
+		ModuleFuntionsListControlUndecoratedName,
+		ModuleFuntionsListControlOrdinal,
+		ModuleFuntionsListControlAddressRVA,
 	};
 
 	DECLARE_MESSAGE_MAP();
@@ -60,6 +72,8 @@ private:
 	void FilterProcesses(const CString& filterText);
 
 	void EnumerateExportedFunctions(HMODULE hModule);
+
+	CString GetDllVersion(const CStringW& dllPath);
 
 private:
 	// handles on-paint message
